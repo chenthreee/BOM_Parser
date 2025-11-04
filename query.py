@@ -92,7 +92,7 @@ def token_request(url):
 
 
 def single_query(url, token, part_code):
-    temp = part_code
+    temp = str(part_code)
     current_time = int(time.time())
     readytoMD5 = f"_t={current_time}"
     temp = temp.replace(" ", "")  # Remove spaces
@@ -108,7 +108,7 @@ def single_query(url, token, part_code):
         'sign': sign,
         'token': token
     }
-    print(params)
+    # print(params)
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
     }
@@ -123,6 +123,8 @@ def single_query(url, token, part_code):
     except requests.exceptions.JSONDecodeError as e:
         result = None
     # return response.json().get("result", [])
+
+    print(response.json())
     return result
 
 
@@ -157,6 +159,7 @@ def color_mark(file_path):
 
 def query_res_process(query_res, query_part_code, manufacturer):
     #######On pending ： 可能有返回的有效数据，但是数据某些字段可能为空，需做例外处理
+    query_part_code = str(query_part_code)
     query_part_code = query_part_code.strip()
     # manufacturer = get_first_word(manufacturer)  # 需要优先选同样厂商的？如果不是同样厂商，参数是否会有所不同
     dip_keywords = ["径向", "通孔", "dip", "插件"]
@@ -216,10 +219,14 @@ def query_online(query_file, token, bom_file_path):
     df_temp_bom = pd.read_excel(query_file, skiprows=4, header=None)
     single_query_url = "https://openapi.ickey.cn/search-v1/products/get-single-goods-new"
     query_res = ''
+
+    # cheng
     for index, row in df_temp_bom.iterrows():
         if pd.notna(row[2]):
             pass
         else:
+            # 需要更换成新的接口
+
             query_res = single_query(single_query_url, token, row[3])
 
             if query_res is None:
@@ -227,9 +234,11 @@ def query_online(query_file, token, bom_file_path):
                 print("Error: Failed to query.")
                 # exit(1)
             else:
-
                 # 对查询结果进行解析
                 parser_res = query_res_process(query_res, row[3], row[8])
+
+
+
                 # 向当前行的第一列写入parser_res中的字段
                 if '贴片' in parser_res['part_type']: parser_res['mount_type'] = ''
                 if '陶瓷' in parser_res['part_type']: parser_res['part_type'] = parser_res['part_type'].replace('陶瓷',
@@ -238,6 +247,8 @@ def query_online(query_file, token, bom_file_path):
                     if item in parser_res['part_type']:
                         parser_res['part_type'] = 'IC'
                         break
+
+
                 # 元件类型填入
                 df_temp_bom.at[index, df_temp_bom.columns[2]] = parser_res['mount_type'] + parser_res['part_type']
                 # 元件规格填入
