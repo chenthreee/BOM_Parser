@@ -10,6 +10,7 @@ from db_model import K3Data
 from typing import Dict
 import openpyxl
 from openpyxl.styles import PatternFill
+import re
 
 # 初始化封装集合
 initialize_set(
@@ -19,8 +20,9 @@ initialize_set(
 
 
 def remove_last_word(s):
-    parts = s.rsplit(' ', 1)
-    return parts[0] if len(parts) > 1 else ''
+    # 使用正则表达式处理中英文空格，从右边分割一次
+    parts = re.split(r'[ 　]+', s)
+    return ' '.join(parts[:-1]) if len(parts) > 1 else ''
 
 
 def text_to_val(lineEdit_text) -> int:
@@ -31,6 +33,35 @@ def text_to_val(lineEdit_text) -> int:
         print("AssertionError : {lineEdit_text}")
     except ValueError:
         print("cannot convert text to number : {lineEdit_text}")
+
+
+# 通过仅用料号强匹配进行查询
+def query_part_info_weak_match(part_code, customer):
+    """
+    使用仅用料号强匹配在K3数据库中进行查询（不匹配客户）
+    :param part_code:料号
+    :param customer:客户编码（保留参数但不使用）
+    :return:该料号在K3中的规格描述列表
+    """
+    all_results = K3Data.select()
+    query_results = []
+    for r in all_results:
+        parts = re.split(r'[ 　]+', r.specification)
+        if len(parts) >= 2 and parts[1] == part_code:
+            query_results.append(r)
+
+    if len(query_results) == 0:
+        return []
+    else:
+        results_list = []
+        for query_result in query_results:
+            results_list.append({
+                'k3code': query_result.k3code,
+                'type_name': query_result.type_name,
+                'specification': query_result.specification,
+                'match_type': '仅用料号强匹配'  # 标记为仅用料号强匹配
+            })
+        return results_list
 
 
 # 通过料号进行查询，返回K3中该料号的相关信息
@@ -50,7 +81,8 @@ def query_part_info_by_partcode(part_code):
             results_list.append({
                 'k3code': None,  # 客户不匹配，不返回K3 编码
                 'type_name': query_result.type_name,
-                'specification': query_result.specification
+                'specification': query_result.specification,
+                'match_type': '仅用料号弱匹配'
             })
         return results_list
 
@@ -69,10 +101,13 @@ def query_part_info(part_code, customer):
     # query_results = K3Data.select().where(K3Data.specification.contains(part_code) &
     #                                       K3Data.specification.contains(customer))
 
-    query_results=K3Data.select().where(
-        K3Data.specification.startswith(customer) &
-        K3Data.specification.contains(part_code)
-    )
+    #强查找了
+    all_results = K3Data.select().where(K3Data.specification.startswith(customer))
+    query_results = []
+    for r in all_results:
+        parts = re.split(r'[ 　]+', r.specification)
+        if len(parts) >= 2 and parts[1] == part_code:
+            query_results.append(r)
 
     result_count = len(query_results)
     print(f"查询到 {result_count} 条结果")
@@ -86,8 +121,13 @@ def query_part_info(part_code, customer):
                 'specification': query_result.specification
             })
         return results_list
-    elif len(query_results) == 0:  # case 1：如果没有查询结果，放宽条件，只用料号来查
-        print(f"无查询结果，放宽条件只用料号查询")
+    elif len(query_results) == 0:  # 如果没有查询结果，先尝试仅用料号强匹配
+        print(f"无查询结果，尝试仅用料号强匹配")
+        weak_results = query_part_info_weak_match(part_code, customer)
+        if len(weak_results) > 0:
+            return weak_results
+        # 料号强匹配也没找到，最后尝试只用料号弱匹配来查
+        print(f"料号强匹配无结果，放宽条件只用料号弱匹配查询")
         return query_part_info_by_partcode(part_code)
     # print('{} {} on {}'.format(note.id, note.text, note.created))
 
@@ -161,6 +201,9 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
 
         # 只有当替代料号列被正确配置时(不为-1),才执行替代料号处理
         if self.alternative1_code_col != -1 and self.alternative1_code_col != self.part_code_col:
+            # 先复制target.xlsx到output.xlsx
+            import shutil
+            shutil.copy('target.xlsx', 'output.xlsx')
             refresh_excel('output.xlsx')
             self.alternative_process()
 
@@ -210,8 +253,9 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
         为Excel文件添加颜色标记
         规则:
         - 黄绿色(#99CC00): 当第3列(C列,元件类型)为空时
-        - 淡灰色(#D3D3D3): 当第3列(C列)有值,但第2列(B列,K3 code)为空时
-        - 浅蓝色(#ADD8E6): 当该行是多条查询结果中的一条时(标记在第10列)
+        - 淡灰色(#D3D3D3): O列标记为'仅用料号弱匹配'
+        - 浅蓝色(#ADD8E6): 当该行是多条查询结果中的一条时(O列标记为'multi'或'multi-xxx')
+        - 橙色(#FFA500): O列标记为'仅用料号强匹配'
         """
         try:
             wb = openpyxl.load_workbook(file_path)
@@ -221,24 +265,34 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
             light_green_fill = PatternFill(start_color="99CC00", end_color="99CC00", fill_type="solid")  # 黄绿色
             grey_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")  # 淡灰色
             light_blue_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")  # 浅蓝色
+            orange_fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")  # 橙色
 
             # 从第5行开始遍历(跳过前4行表头)
             for row in ws.iter_rows(min_row=5, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
                 cell_b = row[1].value  # 第2列(B列,K3 code)
                 cell_c = row[2].value  # 第3列(C列,元件类型)
 
-                # 检查第15列(索引14)是否存在且标记为'multi'
+                # 检查第15列(索引14)是否存在且标记为'multi'或包含'multi'
                 cell_o = None
                 if len(row) > 14:
-                    cell_o = row[14].value  # 第15列(O列,多结果标记)
+                    cell_o = row[14].value  # 第15列(O列,多结果标记/匹配类型标记)
 
-                if cell_o == 'multi':  # 优先标记多结果行
+                # 检查是否为multi行(包括'multi'和'multi-xxx'格式)
+                is_multi = cell_o and isinstance(cell_o, str) and cell_o.startswith('multi')
+
+                if is_multi:  # 优先标记多结果行
                     for cell in row:
                         cell.fill = light_blue_fill  # 标记为浅蓝色
+                elif cell_o == '仅用料号弱匹配':  # 仅用料号弱匹配
+                    for cell in row:
+                        cell.fill = grey_fill  # 标记为灰色
+                elif cell_o == '仅用料号强匹配':  # 仅用料号强匹配
+                    for cell in row:
+                        cell.fill = orange_fill  # 标记为橙色
                 elif cell_c is None:  # 如果元件类型为空
                     for cell in row:
                         cell.fill = light_green_fill  # 标记为黄绿色
-                elif cell_b is None and cell_c is not None:  # 如果类型有值但K3 code为空
+                elif cell_b is None and cell_c is not None:  # 如果类型有值但K3 code为空(已经被上面的条件覆盖了，这个可能不会执行到)
                     for cell in row:
                         cell.fill = grey_fill  # 标记为淡灰色
 
@@ -396,6 +450,11 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
             sheet['C' + str(start_row + part_index)] = first_result['type_name']
             #现在改成不删除客户编码了，因为客户一致的时候本来就不删除 然后客户不一致的时候 也没必要删除 代表 需要工程手工加入k3库中
             sheet['D' + str(start_row + part_index)] = first_result['specification']
+
+            # 写入匹配类型标记到O列(第15列)
+            if 'match_type' in first_result:
+                sheet['O' + str(start_row + part_index)] = first_result['match_type']
+
             workbook.save('target.xlsx')
 
         else:  # 无查询结果，在规格栏写上料号
@@ -424,9 +483,7 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
             # Excel中的实际行号(+5是因为前4行是表头,+1是因为Excel行号从1开始)
             excel_row = part_index + 5
 
-            # 标记原始行为多结果行(第15列,O列)
-            sheet.cell(row=excel_row, column=15, value='multi')
-
+            # 第一条结果不标记为multi,只有第2条及以后的才标记
             # 从第2条结果开始,在当前行下方插入新行
             for result_idx in range(1, len(results_list)):
                 result = results_list[result_idx]
@@ -456,7 +513,11 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
                 sheet.cell(row=insert_row, column=2, value=result['k3code'])  # B列: K3 code
                 sheet.cell(row=insert_row, column=3, value=result['type_name'])  # C列: 类型
                 sheet.cell(row=insert_row, column=4, value=result['specification'])  # D列: 规格
-                sheet.cell(row=insert_row, column=15, value='multi')  # J列: 多结果标记
+                sheet.cell(row=insert_row, column=15, value='multi')  # O列: 多结果标记
+
+                # 如果有匹配类型标记,也写入(但不覆盖multi标记)
+                if 'match_type' in result:
+                    sheet.cell(row=insert_row, column=15, value=f"multi-{result['match_type']}")  # O列: 多结果+匹配类型
 
                 print(f"  添加第 {result_idx + 1} 条结果到Excel第 {insert_row} 行")
 
@@ -501,23 +562,46 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
         alter2_code_list = df_initial_bom_path.iloc[start_row:end_row, self.alternative2_code_col].tolist()  # 替代2料号
         manu2_list = df_initial_bom_path.iloc[start_row:end_row, self.alternative2_manufacturer_col].tolist()  # 替代2厂商
 
-        res_bom_index = 0
-        # 遍历替代，如果有替代，则往工程BOM中进行插入操作
-        for index, code in enumerate(alter1_code_list):
-            if not pd.isnull(code):
-                print(f"处理替代1: index={index}, code={code}, res_bom_index={res_bom_index}")
-                row_to_copy = df_res_bom.iloc[res_bom_index:res_bom_index + 1]  # 获取当前行数据
-                df_res_bom = pd.concat([df_res_bom.iloc[:res_bom_index + 1], row_to_copy,
-                                        df_res_bom.iloc[res_bom_index + 1:]]).reset_index(drop=True)  # 在其下复制一行
-                res_bom_index = res_bom_index + 1
+        # 建立原始BOM行号到工程BOM行号的正确映射
+        # 需要跳过标记为'multi'的行,因为这些行是multi_results_process插入的
+        res_bom_index = 0  # 工程BOM的当前行索引
+        original_bom_row_count = 0  # 已经处理的原始BOM行数
 
-                df_res_bom.iloc[res_bom_index, 8] = manu1_list[index]  # 替代1厂商填写
+        # 遍历原始BOM的每一行，处理替代料
+        for original_index, alter1_code in enumerate(alter1_code_list):
+            # 跳过所有标记为'multi'的行,找到当前原始BOM行对应的工程BOM行
+            while res_bom_index < len(df_res_bom) and df_res_bom.iloc[res_bom_index, 14] == 'multi':
+                res_bom_index += 1
 
-                df_res_bom.iloc[res_bom_index, 1] = None
+            # 确保索引没有越界
+            if res_bom_index >= len(df_res_bom):
+                print(f"警告: res_bom_index={res_bom_index} 超出范围,工程BOM总行数={len(df_res_bom)}")
+                break
+            if not pd.isnull(alter1_code):
+                print(f"处理替代1: original_index={original_index}, code={alter1_code}, res_bom_index={res_bom_index}")
 
-                print(f"开始查询替代1料号: {code}")
-                query_res_alter1 = query_part_info(str(code), self.customer_code)  # 替代1 K3 规格查询
+                # 获取当前要复制的主料行
+                row_to_copy = df_res_bom.iloc[res_bom_index:res_bom_index + 1].copy()  # 使用copy()避免警告
+
+                # 插入替代1行
+                df_res_bom = pd.concat([
+                    df_res_bom.iloc[:res_bom_index + 1],
+                    row_to_copy,
+                    df_res_bom.iloc[res_bom_index + 1:]
+                ], ignore_index=True)
+
+                # 处理替代1
+                res_bom_index += 1  # 移动到新插入的替代1行
+
+                # 设置替代1厂商
+                df_res_bom.iloc[res_bom_index, 8] = manu1_list[original_index]
+                df_res_bom.iloc[res_bom_index, 14] = "替代1"
+                df_res_bom.iloc[res_bom_index, 1] = None  # 清空K3 code
+
+                print(f"开始查询替代1料号: {alter1_code}")
+                query_res_alter1 = query_part_info(str(alter1_code), self.customer_code)
                 print(f"替代1查询完成: {len(query_res_alter1)} 条结果")
+
                 if len(query_res_alter1) != 0:
                     # 取第一条结果
                     first_res = query_res_alter1[0]
@@ -531,121 +615,126 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
                         df_res_bom.iloc[res_bom_index - 1, 2] = first_res['type_name']
                         temp_part_code = df_res_bom.iloc[res_bom_index - 1, 3]  # 主料料号
                         temp_manu = df_res_bom.iloc[res_bom_index - 1, 8]  # 主料供应商
-                        last_word_is_footprint = any_footprint_in_string(
-                            first_res['specification'].split()[-1])  # 规格的最后一个单词 是否是封装
+                        spec_parts = re.split(r'[ 　]+', first_res['specification'])
+                        last_word_is_footprint = any_footprint_in_string(spec_parts[-1])  # 规格的最后一个单词 是否是封装
 
                         if last_word_is_footprint:  # 如果最后一个词是封装，直接复制过去即可
                             df_res_bom.iloc[res_bom_index - 1, 3] = first_res['specification'].replace(
-                                self.customer_code + " ", "").replace(str(code), temp_part_code)+' '+temp_manu
+                                self.customer_code + " ", "").replace(str(alter1_code), temp_part_code)+' '+temp_manu
                         else:  # 如果最后一个单词是品牌
                             df_res_bom.iloc[res_bom_index - 1, 3] = remove_last_word(
                                 first_res['specification']).replace(
-                                str(self.customer_code) + " ", "").replace(str(code), temp_part_code) + ' ' + str(temp_manu)
-                        # On pending 复制 需要去掉原来的 供应商
+                                str(self.customer_code) + " ", "").replace(str(alter1_code), temp_part_code) + ' ' + str(temp_manu)
 
                 else:  # 替代一查询无果，查询主料号记录，复制替代1里
                     if not pd.isnull(df_res_bom.iloc[res_bom_index - 1, 2]):
                         df_res_bom.iloc[res_bom_index, 2] = df_res_bom.iloc[res_bom_index - 1, 2]  # 使用主料号的类型
-                        temp_part_code = df_res_bom.iloc[res_bom_index - 1, 3].split()[0]  # 主料的料号
+                        main_parts = re.split(r'[ 　]+', df_res_bom.iloc[res_bom_index - 1, 3])
+                        temp_part_code = main_parts[0]  # 主料的料号
                         temp_manu = df_res_bom.iloc[res_bom_index, 8]  # 替代1 的品牌
-                        last_word_is_footprint = any_footprint_in_string(
-                            df_res_bom.iloc[res_bom_index - 1, 3].split()[-1])  # 规格的最后一个单词 是否是封装
+                        last_word_is_footprint = any_footprint_in_string(main_parts[-1])  # 规格的最后一个单词 是否是封装
                         if last_word_is_footprint:
                             df_res_bom.iloc[res_bom_index, 3] = df_res_bom.iloc[res_bom_index - 1, 3].replace(
-                                temp_part_code, str(code))+' '+temp_manu  # 替代1 规格填写
+                                temp_part_code, str(alter1_code))+' '+temp_manu  # 替代1 规格填写
                         else:
                             df_res_bom.iloc[res_bom_index, 3] = remove_last_word(df_res_bom.iloc[res_bom_index - 1, 3]).replace(
-                                temp_part_code, str(code))+' '+temp_manu  # 替代1 规格填写
-                        # On pending 复制 需要去掉原来的 供应商
-
+                                temp_part_code, str(alter1_code))+' '+temp_manu  # 替代1 规格填写
                     else:
                         # 主料号也无查询结果，暂时填一个替代一的物料号
-                        df_res_bom.iloc[res_bom_index, 3] = str(code)
+                        df_res_bom.iloc[res_bom_index, 3] = str(alter1_code)
 
-                if self.alternative2_code_col != -1 and not pd.isnull(alter2_code_list[index]):  # 替代二也有东西，再复制一行
-                    df_res_bom = pd.concat([df_res_bom.iloc[:res_bom_index + 1], row_to_copy,
-                                            df_res_bom.iloc[res_bom_index + 1:]]).reset_index(drop=True)  # 在其下复制一行
-                    res_bom_index = res_bom_index + 1
+                # 检查是否有替代2
+                if self.alternative2_code_col != -1 and not pd.isnull(alter2_code_list[original_index]):
+                    print(f"处理替代2: code={alter2_code_list[original_index]}")
 
-                    df_res_bom.iloc[res_bom_index, 8] = manu2_list[index]  # 替代2厂商填写
-                    df_res_bom.iloc[res_bom_index, 1] = None
+                    # 再次复制主料行作为替代2的基础
+                    row_to_copy2 = df_res_bom.iloc[res_bom_index - 1:res_bom_index].copy()  # 复制主料行
+                    df_res_bom = pd.concat([
+                        df_res_bom.iloc[:res_bom_index + 1],
+                        row_to_copy2,
+                        df_res_bom.iloc[res_bom_index + 1:]
+                    ], ignore_index=True)
 
-                    query_res_alter2 = query_part_info(str(alter2_code_list[index]), self.customer_code)  # 替代2 K3 规格查询
+                    res_bom_index += 1  # 移动到新插入的替代2行
+
+                    # 设置替代2厂商
+                    df_res_bom.iloc[res_bom_index, 8] = manu2_list[original_index]
+                    df_res_bom.iloc[res_bom_index, 14] = "替代2"
+                    df_res_bom.iloc[res_bom_index, 1] = None  # 清空K3 code
+
+                    query_res_alter2 = query_part_info(str(alter2_code_list[original_index]), self.customer_code)
                     if len(query_res_alter2) != 0:
                         # 取第一条结果
                         first_res2 = query_res_alter2[0]
-                        df_res_bom.iloc[res_bom_index, 1] = first_res2['k3code']  # 替代2 类型填写
+                        df_res_bom.iloc[res_bom_index, 1] = first_res2['k3code']  # 替代2 k3code填写
                         df_res_bom.iloc[res_bom_index, 2] = first_res2['type_name']  # 替代2 类型填写
                         df_res_bom.iloc[res_bom_index, 3] = first_res2['specification'].replace(
                             self.customer_code + " ", "")  # 替代2 规格填写
-                        # 检查主料、替代1 有无查询结果，如果无，那么填补
 
-                        # 检查替代一有无查询结果，如果无，那么用替代二填补
+                        # 检查替代1有无查询结果，如果无，那么用替代2填补
                         if pd.isnull(df_res_bom.iloc[res_bom_index - 1, 2]):
                             df_res_bom.iloc[res_bom_index - 1, 2] = first_res2['type_name']
                             temp_part_code = df_res_bom.iloc[res_bom_index - 1, 3]
                             temp_manu = df_res_bom.iloc[res_bom_index - 1, 8]
-                            last_word_is_footprint = any_footprint_in_string(first_res2['specification'].split()[-1])
+                            spec2_parts = re.split(r'[ 　]+', first_res2['specification'])
+                            last_word_is_footprint = any_footprint_in_string(spec2_parts[-1])
                             if last_word_is_footprint:
                                 df_res_bom.iloc[res_bom_index - 1, 3] = first_res2['specification'].replace(
-                                    self.customer_code + " ", "").replace(str(alter2_code_list[index]), temp_part_code) +' '+temp_manu
+                                    self.customer_code + " ", "").replace(str(alter2_code_list[original_index]), temp_part_code) +' '+temp_manu
                             else:
                                 df_res_bom.iloc[res_bom_index - 1, 3] = remove_last_word(first_res2['specification']).replace(
-                                    self.customer_code + " ", "").replace(str(alter2_code_list[index]), temp_part_code) +' '+temp_manu
-                        # 检查主料有无查询结果，如果无，那么用替代填补
+                                    self.customer_code + " ", "").replace(str(alter2_code_list[original_index]), temp_part_code) +' '+temp_manu
+
+                        # 检查主料有无查询结果，如果无，那么用替代2填补
                         if pd.isnull(df_res_bom.iloc[res_bom_index - 2, 2]):
                             df_res_bom.iloc[res_bom_index - 2, 2] = first_res2['type_name']
                             temp_part_code = df_res_bom.iloc[res_bom_index - 2, 3]
                             temp_manu = df_res_bom.iloc[res_bom_index - 2, 8]
-                            last_word_is_footprint = any_footprint_in_string(first_res2['specification'].split()[-1])
+                            spec2_parts2 = re.split(r'[ 　]+', first_res2['specification'])
+                            last_word_is_footprint = any_footprint_in_string(spec2_parts2[-1])
                             if last_word_is_footprint:
                                 df_res_bom.iloc[res_bom_index - 2, 3] = first_res2['specification'].replace(
-                                    self.customer_code + " ", "").replace(str(alter2_code_list[index]), temp_part_code)+' '+temp_manu
+                                    self.customer_code + " ", "").replace(str(alter2_code_list[original_index]), temp_part_code)+' '+temp_manu
                             else:
                                 df_res_bom.iloc[res_bom_index - 2, 3] = remove_last_word(first_res2['specification']).replace(
-                                    self.customer_code + " ", "").replace(str(alter2_code_list[index]), temp_part_code)+' '+temp_manu
+                                    self.customer_code + " ", "").replace(str(alter2_code_list[original_index]), temp_part_code)+' '+temp_manu
                     else:
                         if not pd.isnull(df_res_bom.iloc[res_bom_index - 1, 2]):
                             df_res_bom.iloc[res_bom_index, 2] = df_res_bom.iloc[res_bom_index - 1, 2]  # 替代2 类型填写
-                            temp_part_code = df_res_bom.iloc[res_bom_index - 1, 3].split()[0]
+                            main_parts2 = re.split(r'[ 　]+', df_res_bom.iloc[res_bom_index - 1, 3])
+                            temp_part_code = main_parts2[0]
                             temp_manu = df_res_bom.iloc[res_bom_index, 8]
-                            last_word_is_footprint = any_footprint_in_string(df_res_bom.iloc[res_bom_index - 1, 3].split()[-1])
+                            last_word_is_footprint = any_footprint_in_string(main_parts2[-1])
                             if last_word_is_footprint:
                                 df_res_bom.iloc[res_bom_index, 3] = df_res_bom.iloc[res_bom_index - 1, 3].replace(
-                                    temp_part_code, str(alter2_code_list[index]))+' '+ temp_manu  # 替代2 规格填写
+                                    temp_part_code, str(alter2_code_list[original_index]))+' '+ temp_manu  # 替代2 规格填写
                             else:
                                 df_res_bom.iloc[res_bom_index, 3] = remove_last_word(df_res_bom.iloc[res_bom_index - 1, 3]).replace(
-                                    temp_part_code, str(alter2_code_list[index]))+' '+ temp_manu  # 替代2 规格填写
+                                    temp_part_code, str(alter2_code_list[original_index]))+' '+ temp_manu  # 替代2 规格填写
                         else:
                             # 主料号也无查询结果，暂时填一个替代二的物料号
-                            df_res_bom.iloc[res_bom_index, 3] = str(alter2_code_list[index])
-                res_bom_index = res_bom_index + 1
+                            df_res_bom.iloc[res_bom_index, 3] = str(alter2_code_list[original_index])
 
+                # 移动到下一个主料位置
+                res_bom_index += 1
             else:
-                res_bom_index = res_bom_index + 1
+                # 没有替代料，直接移动到下一个主料
+                res_bom_index += 1
 
-        # # 使用openpyxl直接写入,避免创建新sheet
-        # workbook = openpyxl.load_workbook('output.xlsx')
+            # 每处理完一个原始BOM行,记录已处理数量
+            original_bom_row_count += 1
 
-        # # 删除可能存在的多余sheet(除了第一个active sheet)
-        # sheet_names = workbook.sheetnames
-        # if len(sheet_names) > 1:
-        #     for sheet_name in sheet_names[1:]:  # 保留第一个,删除其他
-        #         workbook.remove(workbook[sheet_name])
-        #         print(f"删除多余的sheet: {sheet_name}")
+        # 使用openpyxl直接写入,避免创建新sheet
+        workbook = openpyxl.load_workbook('output.xlsx')
+        sheet = workbook.active
 
-        # sheet = workbook.active
+        # 从第5行开始写入数据
+        start_row = 5
+        for row_idx, row_data in df_res_bom.iterrows():
+            for col_idx, value in enumerate(row_data, start=1):
+                sheet.cell(row=start_row + row_idx, column=col_idx, value=value)
 
-        # # 从第5行开始写入数据
-        # start_row = 5
-        # for row_idx, row_data in df_res_bom.iterrows():
-        #     for col_idx, value in enumerate(row_data, start=1):
-        #         sheet.cell(row=start_row + row_idx, column=col_idx, value=value)
-
-        # workbook.save('output.xlsx')
-
-        with pd.ExcelWriter('output.xlsx', engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
-            df_res_bom.to_excel(writer, index=False, startrow=4, header=False)
+        workbook.save('output.xlsx')
         print("替代料号处理完成,已保存到output.xlsx")
 
     def online_query(self):
