@@ -43,6 +43,9 @@ def query_part_info_weak_match(part_code, customer):
     :param customer:客户编码（保留参数但不使用）
     :return:该料号在K3中的规格描述列表
     """
+    # 去除料号首尾空格
+    part_code = part_code.strip()
+
     all_results = K3Data.select()
     query_results = []
     for r in all_results:
@@ -71,6 +74,9 @@ def query_part_info_by_partcode(part_code):
     :param part_code:料号
     :return:该客户、该料号在K3中的规格描述列表
     """
+    # 去除料号首尾空格
+    part_code = part_code.strip()
+
     query_results = K3Data.select().where(K3Data.specification.contains(part_code))
 
     if len(query_results) == 0:  # case 1：如果没有查询结果
@@ -94,6 +100,9 @@ def query_part_info(part_code, customer):
     :param customer:客户编码
     :return:该客户、该料号在K3中的规格描述列表
     """
+    # 去除料号首尾空格
+    part_code = part_code.strip()
+
     # 根据 料号以及客户编码进行查询
     print(f"开始数据库查询: part_code={part_code}, customer={customer}")
 
@@ -371,6 +380,21 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
 
         # 保存Excel文件
         workbook.save('target.xlsx')
+
+    # 强查找
+    # I chose HKU because its MSc in AI combines strong theoretical training with practical, application-oriented learning.
+    # The programme is jointly offered by the Departments of Mathematics and Computer Science, which gives me a solid 
+    # foundation in machine learning as well as the opportunity to work on real-world AI projects through the capstone project. 
+    # In addition, HKU’s highly international environment will allow me to learn from experts and peers from diverse backgrounds. 
+    # Overall, HKU aligns perfectly with my academic interests and long-term career goals. 
+
+    # AI still faces several key challenges.
+    # First, many deep learning models are still black boxes, and we often cannot clearly explain how they make decisions. 
+    # This becomes a major concern in high-stakes fields such as healthcare and finance, where transparency is essential.
+    # Second, deploying AI systems in real-world environments is difficult because models must be stable, reliable, and efficient
+    # in terms of computation, especially on resource-limited devices.
+    # Third, privacy protection is also a major challenge, as AI systems often rely on large amounts of user data, which requires
+    # responsible and secure handling. 
 
     # xlsx格式原始BOM处理
     def raw_BOM_parse_process(self):
