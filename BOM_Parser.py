@@ -59,7 +59,9 @@ def query_part_info_weak_match(part_code, customer):
         results_list = []
         for query_result in query_results:
             results_list.append({
-                'k3code': query_result.k3code,
+                #'k3code': query_result.k3code,
+                'k3code': None,
+
                 'type_name': query_result.type_name,
                 'specification': query_result.specification,
                 'match_type': '仅用料号强匹配'  # 标记为仅用料号强匹配
@@ -301,7 +303,7 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
                 elif cell_c is None:  # 如果元件类型为空
                     for cell in row:
                         cell.fill = light_green_fill  # 标记为黄绿色
-                elif cell_b is None and cell_c is not None:  # 如果类型有值但K3 code为空(已经被上面的条件覆盖了，这个可能不会执行到)
+                elif cell_b is None and cell_c is not None:  # 如果类型有值但K3 code为空(已经被上面的条件覆盖了，这个可能不会执行到 其实是不会覆盖的因为有k3code的 O列不会标记到)
                     for cell in row:
                         cell.fill = grey_fill  # 标记为淡灰色
 
@@ -380,21 +382,6 @@ class MyMainWindow(QMainWindow, Ui_Dialog):
 
         # 保存Excel文件
         workbook.save('target.xlsx')
-
-    # 强查找
-    # I chose HKU because its MSc in AI combines strong theoretical training with practical, application-oriented learning.
-    # The programme is jointly offered by the Departments of Mathematics and Computer Science, which gives me a solid 
-    # foundation in machine learning as well as the opportunity to work on real-world AI projects through the capstone project. 
-    # In addition, HKU’s highly international environment will allow me to learn from experts and peers from diverse backgrounds. 
-    # Overall, HKU aligns perfectly with my academic interests and long-term career goals. 
-
-    # AI still faces several key challenges.
-    # First, many deep learning models are still black boxes, and we often cannot clearly explain how they make decisions. 
-    # This becomes a major concern in high-stakes fields such as healthcare and finance, where transparency is essential.
-    # Second, deploying AI systems in real-world environments is difficult because models must be stable, reliable, and efficient
-    # in terms of computation, especially on resource-limited devices.
-    # Third, privacy protection is also a major challenge, as AI systems often rely on large amounts of user data, which requires
-    # responsible and secure handling. 
 
     # xlsx格式原始BOM处理
     def raw_BOM_parse_process(self):
